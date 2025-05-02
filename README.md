@@ -60,7 +60,7 @@ sudo newgrp docker
 ```
 sudo docker-compose up
 ```
-
+Now we need to open a new terminal
 # (2) ** Before entering the docker instance  **
 
 ## Send MicroPinfi
@@ -76,12 +76,12 @@ docker cp mid_tier_server.cc microsuite_hdsearch_1:/MicroSuite/src/HDSearch/mid_
 docker cp load_generator_open_loop.cc microsuite_hdsearch_1:/MicroSuite/src/HDSearch/load_generator
 docker cp atomics.cpp microsuite_hdsearch_1:/MicroSuite/src/HDSearch/mid_tier_service/src
 ```
-At this point we need to open a new terminal and login on the docker instance to execute our benchmark
+At this point we need to login on the docker instance to execute our benchmark
 ```
 cd MicroSuite
 sudo docker-compose exec hdsearch sh
 ```
-## Uptade ~/.bashrc
+## Inside terminal Uptade ~/.bashrc
 ```
 nano ~/.bashrc
 
@@ -131,4 +131,11 @@ make
 mkdir ./results
 ./load_generator_open_loop /home/image_feature_vectors.dat ./results/ 1 30 100 0.0.0.0:50051 dummy1 dummy2 dummy3
 
+```
+# (4) ** Using Pin injection tools **
+```
+pin -t /home/students/cs/2021/kdimit06/PIN/pin-3.31/source/tools/ManualExamples/obj-intel64/[injection tool name you want to use].so -- ./sevice
+
+example:
+pin -t /home/students/cs/2021/kdimit06/PIN/pin-3.31/source/tools/ManualExamples/obj-intel64/fault_injection_specific_query_instr_forked_application2.so -- ./bucket_server /home/image_feature_vectors.dat 0.0.0.0:50050 2 -1 0 1
 ```
