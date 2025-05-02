@@ -1,0 +1,1 @@
+Injection at instruction: 0x401f88, Register: xmm0, Vector: 0, Original Value: 0x3fe23d70a3d70a3e, Mask: 0x10000000000, Injected Value: 0x3fe23c70a3d70a3e
