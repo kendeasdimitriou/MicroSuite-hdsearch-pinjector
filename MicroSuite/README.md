@@ -44,6 +44,13 @@ sudo mount --rbind /mydata /var/lib/docker
 sudo systemctl start docker
 ```
 
+## Clone repository
+```
+mkdir microsuite
+cd microsuite
+git clone git@github.com:kendeasdimitriou/MicroSuite-hdsearch-pinjector.git
+cd MicroSuite-hdsearch-pinjector
+```
 ## Change to docker group
 ```
 cd MicroSuite
@@ -53,9 +60,17 @@ sudo newgrp docker
 ```
 sudo docker-compose up
 ```
-## Before entering the docker instance
+
+# (2) ** Before entering the docker instance  **
+
+## Send MicroPinfi
 ```
-cd MicroSuite
+docker ps
+docker cp MicroPinfi microsuite_hdsearch_1:/
+```
+## Send updated files
+```
+cd changedFiles
 docker cp bucket_server.cc microsuite_hdsearch_1:/MicroSuite/src/HDSearch/bucket_service/service
 docker cp mid_tier_server.cc microsuite_hdsearch_1:/MicroSuite/src/HDSearch/mid_tier_service/service
 docker cp load_generator_open_loop.cc microsuite_hdsearch_1:/MicroSuite/src/HDSearch/load_generator
@@ -65,6 +80,16 @@ At this point we need to open a new terminal and login on the docker instance to
 ```
 cd MicroSuite
 sudo docker-compose exec hdsearch sh
+```
+## Uptade ~/.bashrc
+```
+nano ~/.bashrcexport
+
+PIN_HOME=/MicroPinfi/pin-3.31
+export PIN_ROOT=/MicroPinfi/pin-3.31
+export PATH=$PIN_HOME:$PATH
+
+source ~/.bashrc
 ```
 
 From this point on we can execute each benchmark based on the commands provided in section (3)
