@@ -135,8 +135,8 @@ mkdir ./results
 ```
 # (4) ** Using Pin injection tools **
 ```
-pin -t MicroPinfi/pin-3.31/source/tools/ManualExamples/obj-intel64/[injection tool name you want to use].so -- ./sevice
+pin -t /MicroPinfi/pin-3.31/source/tools/ManualExamples/obj-intel64/[injection tool name you want to use].so -- ./sevice
 
 example:
-pin -t MicroPinfi/pin-3.31/source/tools/ManualExamples/obj-intel64/fault_injection_specific_query_instr_forked_application2.so -- ./bucket_server /home/image_feature_vectors.dat 0.0.0.0:50050 2 -1 0 1
+pin -t /MicroPinfi/pin-3.31/source/tools/ManualExamples/obj-intel64/fault_injection_specific_query_instr_forked_application2.so -- ./bucket_server /home/image_feature_vectors.dat 0.0.0.0:50050 2 -1 0 1
 ```
