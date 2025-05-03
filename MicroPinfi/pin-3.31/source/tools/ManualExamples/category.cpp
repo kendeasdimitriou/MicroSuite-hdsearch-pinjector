@@ -82,10 +82,11 @@ VOID InstructionAnalysis(ADDRINT ip,INS ins,UINT32 numW, CONTEXT *ctxt) {
 // Entry point: Initialize and add the instrumentation routine
 VOID InstructionInstrumentation(INS ins, VOID *v) { 
     // Add a call to InstructionAnalysis for each instruction
-    if(!isValidInst(ins))return;
+//    if(!isValidInst(ins))return;
 
-    if (!(IsArithmeticLogicInstruction(ins)))return; // Select a r>) {               return; // Skip non-arithmetic/logic instructions
+//    if (!(IsArithmeticLogicInstruction(ins)))return; // Select a r>) {               return; // Skip non-arithmetic/logic instructions
     srand(time(0)); // Initialize random number generator
+
     int numW = INS_MaxNumWRegs(ins); // Get the number of write registers for the instruction
 //    if (numW == 0) return; // Skip if no write registers are available
 
@@ -104,7 +105,7 @@ VOID InstructionInstrumentation(INS ins, VOID *v) {
     //        LOG("!!!!!!!!!REGNOTVALID: inst " + INS_Disassemble(ins) + "!!!!!!!!!!!!!\n");
      //       return;
      // }
-    INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR)InstructionAnalysis,
+    INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)InstructionAnalysis,
         IARG_INST_PTR, 
         IARG_PTR, ins,
         IARG_UINT32, numW, // Pass the register index
