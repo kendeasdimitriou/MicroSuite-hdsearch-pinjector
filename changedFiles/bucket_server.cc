@@ -12,6 +12,8 @@
 #include "bucket_service/service/helper_files/server_helper.h"
 #include "bucket_service/service/helper_files/timing.h"
 #include "bucket_service/src/utils.h"
+#include <sys/types.h>
+#include <sys/wait.h>
 
 using grpc::Server;
 using grpc::ServerAsyncResponseWriter;
@@ -40,58 +42,36 @@ int num_cores = 0, bucket_server_num = 0, num_bucket_servers = 0;
 
 extern "C" {
 
-void FaultInjectionBegin() {
-    std::ofstream file("fault_injection.log", std::ios::app);
-    if (file.is_open()) {
-        file << "fault injection started" << std::endl;
+    __attribute__((noinline)) void FaultInjectionBegin(int i) {
     }
-}
 
-void FaultInjectionEnd() {
-    std::ofstream file("fault_injection.log", std::ios::app);
-    if (file.is_open()) {
-        file << "fault injection finished" << std::endl;
+    __attribute__((noinline)) void FaultInjectionEnd() {
     }
-}
-
-void FaultInjectionBegin_parent() {
-    std::ofstream file("fault_injection.log", std::ios::app);
-    if (file.is_open()) {
-        file << "fault injection started" << std::endl;
+    void QueryBegins(int queryId) {
+        std::ofstream file("query_begins.log", std::ios::app);
+        if (file.is_open()) {
+            file << "Query Begins" << std::endl;
+            //uint64_t value = request.queries(0);
+            file << queryId << std::endl;
+        }
     }
-}
-
-void FaultInjectionEnd_parent() {
-    std::ofstream file("fault_injection.log", std::ios::app);
-    if (file.is_open()) {
-        file << "fault injection finished" << std::endl;
-    }
-}
-void QueryBegins(int queryId) {
-    std::ofstream file("query_begins.log", std::ios::app);
-    if (file.is_open()) {
-        file << "Query Begins" << std::endl;
-    //uint64_t value = request.queries(0);
-        file << queryId << std::endl;
-  }
-}
 } // extern "C"
 
 
 
-void ProcessRequest(NearestNeighborRequest &request,
-        NearestNeighborResponse* reply)
+void ProcessRequest(NearestNeighborRequest& request,
+    NearestNeighborResponse* reply)
 {
     /* If the index server is asking for util info,
        it means the time period has expired, so
        the bucket must read /proc/stat to provide user, system, io, and idle times.*/
-    if(request.util_request().util_request())
+    if (request.util_request().util_request())
     {
         uint64_t user_time = 0, system_time = 0, io_time = 0, idle_time = 0;
         GetCpuTimes(&user_time,
-                &system_time,
-                &io_time,
-                &idle_time);
+            &system_time,
+            &io_time,
+            &idle_time);
         reply->mutable_util_response()->set_user_time(user_time);
         reply->mutable_util_response()->set_system_time(system_time);
         reply->mutable_util_response()->set_io_time(io_time);
@@ -109,7 +89,7 @@ void ProcessRequest(NearestNeighborRequest &request,
     //GetCpuTimes(&idle_time_initial, &total_time_initial);
 
     // Unpack received queries and point IDs
-//std::cout << "Request fields: " << request.DebugString() << std::endl;
+    //std::cout << "Request fields: " << request.DebugString() << std::endl;//
     Point p(dataset.GetPointAtIndex(0).GetSize(), 0.0);
     MultiplePoints queries(request.queries_size(), p);
     std::vector<std::vector<uint32_t>> point_ids_vec;
@@ -117,96 +97,55 @@ void ProcessRequest(NearestNeighborRequest &request,
     uint64_t start_time, end_time;
     start_time = GetTimeInMicro();
     UnpackBucketServiceRequestAsync(request,
-            dataset,
-            &queries,
-            &point_ids_vec,
-            &bucket_server_id,
-            &shard_size,
-            reply);
+        dataset,
+        &queries,
+        &point_ids_vec,
+        &bucket_server_id,
+        &shard_size,
+        reply);
     end_time = GetTimeInMicro();
-//std::cout << "Request fields: " << request.DebugString() << std::endl;
+    //std::cout << "Request fields: " << request.DebugString() << std::endl;//
     reply->mutable_timing_data_in_micro()->set_unpack_bucket_req_time_in_micro((end_time - start_time));
     /* Next piggy back message - sent the received query back to the
        index server. Helps to merge async responses.*/
-    // Remove duplicate point IDs.
-    //RemoveDuplicatePointIDs(point_ids_vec);
+       // Remove duplicate point IDs.
+       //RemoveDuplicatePointIDs(point_ids_vec);
 
-    // Dataset dimension must be equal to queries dimension.
+       // Dataset dimension must be equal to queries dimension.
 #if 0
     dataset.ValidateDimensions(dataset.GetPointDimension(),
-            queries.GetPointDimension());
+        queries.GetPointDimension());
 #endif
 
     // Calculate the top K distances for all queries.
     DistCalc knn_answer;
     uint32_t number_of_nearest_neighbors = (uint32_t)request.requested_neighbor_count();
     start_time = GetTimeInMicro();
-uint64_t value = request.queries(0);
-int intValue = static_cast<int>(value);
-QueryBegins(intValue);
-//FaultInjectionBegin();
-pid_t pid = fork();
-if (pid < 0) {
-   perror("fork failed");
-}
-else if (pid == 0) {
-    // ==== CHILD PROCESS ====
-   // uint64_t child_start = GetTimeInMicro();
-FaultInjectionBegin();
+    uint64_t value = request.queries(0);
+    int intValue = static_cast<int>(value);
+    QueryBegins(intValue);
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork failed");
+    }
+    else if (pid > 0) {
+        // ==== PARENT PROCESS ====
+        waitpid(pid, NULL, 0);
+        std::cout << "PARENT STARTS" << std::endl;
+    }
+
+    // ==== INJECTION/TRACING WINDOW ==== 1:INJECTION , 0:NO INJECTION
+    FaultInjectionBegin(1);
+
     CalculateKNN(queries,
-                 dataset,
-                 point_ids_vec,
-                 number_of_nearest_neighbors,
-                 num_cores,
-                 &knn_answer);
-FaultInjectionEnd();
- //   uint64_t child_end = GetTimeInMicro();
+        dataset,
+        point_ids_vec,
+        number_of_nearest_neighbors,
+        num_cores,
+        &knn_answer);
 
-    //std::ofstream ofs("knn_answer_child.txt");
-   /// if (!ofs) {
-    //    std::cerr << "Failed to open output file\n";
-   //     _exit(1);
-  //  }
-    //ofs << "QueryID: " << intValue << "\n"
-     //   << "Child CalculateKNN time (μs): " << (child_end - child_start) << "\n"
-      //  << "Nearest neighbors:\n";
-  //  for (int i = 0; i < knn_answer.ids_size(); ++i) {
-   //     ofs << "  id=" << knn_answer.ids(i)
-    ///        << " dist=" << knn_answer.distances(i) << "\n";
-   // }
-    // τέλος του child
-    _exit(0);
-}
-else {
-    // ==== PARENT PROCESS ====
-   // uint64_t parent_start = GetTimeInMicro();
-FaultInjectionBegin_parent();
-    CalculateKNN(queries,
-                 dataset,
-                 point_ids_vec,
-                 number_of_nearest_neighbors,
-                 num_cores,
-                 &knn_answer);
-FaultInjectionEnd_parent();
-    //uint64_t parent_end = GetTimeInMicro();
+    FaultInjectionEnd();
 
-    // καταγράφεις το timing στο reply
- //   reply->mutable_timing_data_in_micro()->set_calculate_knn_time_in_micro(
-  //      (parent_end - parent_start));
-
-    // προαιρετικά μαζεύεις τον child (non-blocking)
-    // int status;
-    // waitpid(pid, &status, WNOHANG);
-
-    // συνεχίζεις κανονικά
-}
-   // CalculateKNN(queries,
-     //       dataset,
-       //     point_ids_vec,
-         //   number_of_nearest_neighbors,
-           // num_cores,
-          //  &knn_answer);
-//FaultInjectionEnd();
     end_time = GetTimeInMicro();
     reply->mutable_timing_data_in_micro()->set_calculate_knn_time_in_micro((end_time - start_time));
 
@@ -214,192 +153,182 @@ FaultInjectionEnd_parent();
     start_time = GetTimeInMicro();
 
     PackBucketServiceResponse(knn_answer,
-            bucket_server_id,
-            shard_size,
-            reply);
+        bucket_server_id,
+        shard_size,
+        reply);
 
     end_time = GetTimeInMicro();
     reply->mutable_timing_data_in_micro()->set_pack_bucket_resp_time_in_micro((end_time - start_time));
     //GetCpuTimes(&idle_time_final, &total_time_final);
     const float idle_time_delta = idle_time_final - idle_time_initial;
     const float total_time_delta = total_time_final - total_time_initial;
-    const float cpu_util = (100.0 * (1.0 - (idle_time_delta/total_time_delta)));
+    const float cpu_util = (100.0 * (1.0 - (idle_time_delta / total_time_delta)));
     reply->mutable_timing_data_in_micro()->set_cpu_util(cpu_util);
     reply->set_index_view(request.index_view());
-}
 
+    std::ostringstream fname;
+    fname << "knn_answer_.txt";
+
+    // Serialize the knn_answer stored in reply to file
+    std::ofstream ofs(fname.str(), std::ios::app);
+    if (ofs.is_open()) {
+        // Assuming reply contains a DebugString method for human-readable output
+        ofs << knn_answer.get_knn_value() << (pid == 0 ? " CHILD" : " PARENT") << '\n';
+        ofs.close();
+    }
+    else {
+        fprintf(stderr, "Failed to open file %s for writing knn_answer\n", fname.str().c_str());
+    }
+
+    if (pid == 0) {
+        // ==== CHILD PROCESS ====
+        std::cout << "CHILD ENDS" << std::endl;
+        _exit(0);
+    }
+}
 // Logic and data behind the server's behavior.
 class ServiceImpl final {
+public:
+    ~ServiceImpl() {
+        server_->Shutdown();
+        // Always shutdown the completion queue after the server.
+        cq_->Shutdown();
+    }
+    // There is no shutdown handling in this code.
+    void Run() {
+        std::string server_address(ip_port);
+        ServerBuilder builder;
+        // Listen on the given address without any authentication mechanism.
+        try
+        {
+            builder.AddListeningPort(server_address,
+                grpc::InsecureServerCredentials());
+        }
+        catch (...) {
+            CHECK(false, "ERROR: Enter a valid IP address follwed by port number - IP:Port number\n");
+        }
+        // Register "service_" as the instance through which we'll communicate with
+        // clients. In this case it corresponds to an *asynchronous* service.
+        builder.RegisterService(&service_);
+        // Get hold of the completion queue used for the asynchronous communication
+        // with the gRPC runtime.
+        cq_ = builder.AddCompletionQueue();
+        // Finally assemble the server.
+        server_ = builder.BuildAndStart();
+        std::cout << "Server listening on " << server_address << std::endl;
+        // Proceed to the server's main loop.
+        if (bucket_parallelism == 1) {
+            HandleRpcs();
+        }
+        omp_set_dynamic(0);
+        omp_set_num_threads(bucket_parallelism);
+        omp_set_nested(2);
+        //#pragma omp parallel
+          //          {
+        HandleRpcs();
+        //        }
+    }
+private:
+    // Class encompasing the state and logic needed to serve a request.
+    class CallData {
     public:
-        ~ServiceImpl() {
-            server_->Shutdown();
-            // Always shutdown the completion queue after the server.
-            cq_->Shutdown();
+        // Take in the "service" instance (in this case representing an asynchronous
+        // server) and the completion queue "cq" used for asynchronous communication
+        // with the gRPC runtime.
+        CallData(DistanceService::AsyncService* service, ServerCompletionQueue* cq)
+            : service_(service), cq_(cq), responder_(&ctx_), status_(CREATE) {
+            // Invoke the serving logic right away.
+            Proceed();
         }
-        // There is no shutdown handling in this code.
-        void Run() {
-            std::string server_address(ip_port);
-            ServerBuilder builder;
-            // Listen on the given address without any authentication mechanism.
-            try
-            {
-                builder.AddListeningPort(server_address,
-                        grpc::InsecureServerCredentials());
-            } catch(...) {
-                CHECK(false, "ERROR: Enter a valid IP address follwed by port number - IP:Port number\n");
-            }
-            // Register "service_" as the instance through which we'll communicate with
-            // clients. In this case it corresponds to an *asynchronous* service.
-            builder.RegisterService(&service_);
-            // Get hold of the completion queue used for the asynchronous communication
-            // with the gRPC runtime.
-            cq_ = builder.AddCompletionQueue();
-            // Finally assemble the server.
-            server_ = builder.BuildAndStart();
-            std::cout << "Server listening on " << server_address << std::endl;
-            // Proceed to the server's main loop.
-            if (bucket_parallelism == 1) {
-                HandleRpcs();
-            }
-            omp_set_dynamic(0);
-            omp_set_num_threads(bucket_parallelism);
-            omp_set_nested(2);
-//#pragma omp parallel
-  //          {
-                HandleRpcs();
-    //        }
-        }
-    private:
-        // Class encompasing the state and logic needed to serve a request.
-        class CallData {
-            public:
-                // Take in the "service" instance (in this case representing an asynchronous
-                // server) and the completion queue "cq" used for asynchronous communication
-                // with the gRPC runtime.
-                CallData(DistanceService::AsyncService* service, ServerCompletionQueue* cq)
-                    : service_(service), cq_(cq), responder_(&ctx_), status_(CREATE) {
-                        // Invoke the serving logic right away.
-                        Proceed();
-                    }
 
-                void Proceed() {
-                    if (status_ == CREATE) {
-                        // Make this instance progress to the PROCESS state.
-                        status_ = PROCESS;
+        void Proceed() {
+            if (status_ == CREATE) {
+                // Make this instance progress to the PROCESS state.
+                status_ = PROCESS;
 
-                        // As part of the initial CREATE state, we *request* that the system
-                        // start processing requests. In this request, "this" acts are
-                        // the tag uniquely identifying the request (so that different CallData
-                        // instances can serve different requests concurrently), in this case
-                        // the memory address of this CallData instance.
-                        service_->RequestGetNearestNeighbors(&ctx_, &request_, &responder_, cq_, cq_,
-                                this);
-                    } else if (status_ == PROCESS) {
-                        // Spawn a new CallData instance to serve new clients while we process
-                        // the one for this CallData. The instance will deallocate itself as
-                        // part of its FINISH state.
-                        new CallData(service_, cq_);
-                        // The actual processing.
-                        ProcessRequest(request_, &reply_);
+                // As part of the initial CREATE state, we *request* that the system
+                // start processing requests. In this request, "this" acts are
+                // the tag uniquely identifying the request (so that different CallData
+                // instances can serve different requests concurrently), in this case
+                // the memory address of this CallData instance.
+                service_->RequestGetNearestNeighbors(&ctx_, &request_, &responder_, cq_, cq_,
+                    this);
+            }
+            else if (status_ == PROCESS) {
+                // Spawn a new CallData instance to serve new clients while we process
+                // the one for this CallData. The instance will deallocate itself as
+                // part of its FINISH state.
+                new CallData(service_, cq_);
+                // The actual processing.
+                ProcessRequest(request_, &reply_);
                 //   EndOfQuery(request_);
                         // And we are done! Let the gRPC runtime know we've finished, using the
                         // memory address of this instance as the uniquely identifying tag for
                         // the event.
-                        status_ = FINISH;
-                        responder_.Finish(reply_, Status::OK, this);
-                    } else {
-                        //GPR_ASSERT(status_ == FINISH);
-                        // Once in the FINISH state, deallocate ourselves (CallData).
-                        delete this;
-                    }
-                }
-            private:
-                // The means of communication with the gRPC runtime for an asynchronous
-                // server.
-                DistanceService::AsyncService* service_;
-                // The producer-consumer queue where for asynchronous server notifications.
-                ServerCompletionQueue* cq_;
-                // Context for the rpc, allowing to tweak aspects of it such as the use
-                // of compression, authentication, as well as to send metadata back to the
-                // client.
-                ServerContext ctx_;
-
-                // What we get from the client.
-                NearestNeighborRequest request_;
-                // What we send back to the client.
-                NearestNeighborResponse reply_;
-
-                // The means to get back to the client.
-                ServerAsyncResponseWriter<NearestNeighborResponse> responder_;
-
-                // Let's implement a tiny state machine with the following states.
-                enum CallStatus { CREATE, PROCESS, FINISH };
-                CallStatus status_;  // The current serving state.
-        };
-
-        // This can be run in multiple threads if needed.
-        void HandleRpcs() {
-            // Spawn a new CallData instance to serve new clients.
-            new CallData(&service_, cq_.get());
-            void* tag;  // uniquely identifies a request.
-            bool ok;
-            while (true) {
-                // Block waiting to read the next event from the completion queue. The
-                // event is uniquely identified by its tag, which in this case is the
-                // memory address of a CallData instance.
-                // The return value of Next should always be checked. This return value
-                // tells us whether there is any kind of event or cq_ is shutting down.
-                //GPR_ASSERT(cq_->Next(&tag, &ok));
-                cq_->Next(&tag, &ok);
-                /*auto r = cq_->AsyncNext(&tag, &ok, gpr_time_0(GPR_CLOCK_REALTIME));
-                  if (r == ServerCompletionQueue::GOT_EVENT) {
-                //GPR_ASSERT(ok);
-                static_cast<CallData*>(tag)->Proceed();
-                }
-                if (r == ServerCompletionQueue::TIMEOUT) continue;*/
-                //GPR_ASSERT(ok);
-                static_cast<CallData*>(tag)->Proceed();
+                status_ = FINISH;
+                responder_.Finish(reply_, Status::OK, this);
+            }
+            else {
+                //GPR_ASSERT(status_ == FINISH);
+                // Once in the FINISH state, deallocate ourselves (CallData).
+                delete this;
             }
         }
+    private:
+        // The means of communication with the gRPC runtime for an asynchronous
+        // server.
+        DistanceService::AsyncService* service_;
+        // The producer-consumer queue where for asynchronous server notifications.
+        ServerCompletionQueue* cq_;
+        // Context for the rpc, allowing to tweak aspects of it such as the use
+        // of compression, authentication, as well as to send metadata back to the
+        // client.
+        ServerContext ctx_;
 
-        std::unique_ptr<ServerCompletionQueue> cq_;
-        DistanceService::AsyncService service_;
-        std::unique_ptr<Server> server_;
-};
-/*
-std::string get_and_remove_first_ip(const std::string& filename) {
-    std::ifstream infile(filename);
-    if (!infile.is_open()) {
-        throw std::runtime_error("Could not open " + filename);
-    }
+        // What we get from the client.
+        NearestNeighborRequest request_;
+        // What we send back to the client.
+        NearestNeighborResponse reply_;
 
-    std::string first_line;
-    std::vector<std::string> remaining_lines;
-    bool first = true;
+        // The means to get back to the client.
+        ServerAsyncResponseWriter<NearestNeighborResponse> responder_;
 
-    std::string line;
-    while (std::getline(infile, line)) {
-        if (first) {
-            first_line = line;
-            first = false;
-        } else {
-            remaining_lines.push_back(line);
+        // Let's implement a tiny state machine with the following states.
+        enum CallStatus { CREATE, PROCESS, FINISH };
+        CallStatus status_;  // The current serving state.
+    };
+
+    // This can be run in multiple threads if needed.
+    void HandleRpcs() {
+        // Spawn a new CallData instance to serve new clients.
+        new CallData(&service_, cq_.get());
+        void* tag;  // uniquely identifies a request.
+        bool ok;
+        while (true) {
+            // Block waiting to read the next event from the completion queue. The
+            // event is uniquely identified by its tag, which in this case is the
+            // memory address of a CallData instance.
+            // The return value of Next should always be checked. This return value
+            // tells us whether there is any kind of event or cq_ is shutting down.
+            //GPR_ASSERT(cq_->Next(&tag, &ok));
+            cq_->Next(&tag, &ok);
+            /*auto r = cq_->AsyncNext(&tag, &ok, gpr_time_0(GPR_CLOCK_REALTIME));
+              if (r == ServerCompletionQueue::GOT_EVENT) {
+            //GPR_ASSERT(ok);
+            static_cast<CallData*>(tag)->Proceed();
+            }
+            if (r == ServerCompletionQueue::TIMEOUT) continue;*/
+            //GPR_ASSERT(ok);
+            static_cast<CallData*>(tag)->Proceed();
         }
     }
-    infile.close();
 
-    if (first_line.empty()) {
-        throw std::runtime_error("IP list is empty!");
-    }
-    std::ofstream outfile(filename, std::ios::trunc);
-    for (const auto& l : remaining_lines) {
-        outfile << l << "\n";
-    }
-   outfile.close();
+    std::unique_ptr<ServerCompletionQueue> cq_;
+    DistanceService::AsyncService service_;
+    std::unique_ptr<Server> server_;
+};
 
-    return first_line;
-}
-*/
+
 int main(int argc, char** argv) {
     std::string dataset_file_name;
     if (argc == 7) {
@@ -407,31 +336,22 @@ int main(int argc, char** argv) {
         {
             dataset_file_name = argv[1];
         }
-        catch(...)
+        catch (...)
         {
             CHECK(false, "Enter a valid string for dataset file path\n");
         }
-    } else {
+    }
+    else {
         CHECK(false, "Format: ./<bucket_server> <dataset file path> <IP address:Port Number> <Mode 1 - read dataset from text file OR Mode 2 - read dataset from binary file <number of bucket server threads> <num of cores: -1 if you want all cores on the machine> <bucket server number> <number of bucket servers in the system>\n");
     }
     // Load the bucket server IP
     ip_port = argv[2];
-  //  try {
-   //     ip_port = get_and_remove_first_ip("ip_List.txt");
-    //    std::cout << "Using IP:PORT = " << ip_port << std::endl;
-
-      // ./bucket_server ip_port ...
-
-  //  } catch (const std::exception& e) {
-   //     std::cerr << "Error: " << e.what() << std::endl;
-    //    return 1;
-   // }
     // Create dataset.
     int mode = atoi(argv[3]);
 
     num_cores = atoi(argv[4]);
 
-    if ( (num_cores == -1) || (num_cores > GetNumProcs()) ) {
+    if ((num_cores == -1) || (num_cores > GetNumProcs())) {
         num_cores = GetNumProcs();
     }
 
@@ -442,15 +362,21 @@ int main(int argc, char** argv) {
     if (mode == 1)
     {
         CreatePointsFromFile(dataset_file_name, &dataset);
-    } else if (mode == 2) {
+    }
+    else if (mode == 2) {
         CreateDatasetFromBinaryFile(dataset_file_name,
-                bucket_server_num,
-                num_bucket_servers,
-                &dataset);
-    } else {
+            bucket_server_num,
+            num_bucket_servers,
+            &dataset);
+    }
+    else {
         CHECK(false, "ERROR: Argument 3 - Mode can either be 1 (text file) or 2 (binary file\n");
     }
     ServiceImpl server;
     server.Run();
     return 0;
 }
+
+
+
+

@@ -74,6 +74,7 @@ docker cp MicroPinfi microsuite_hdsearch_1:/
 ```
 cd changedFiles
 docker cp bucket_server.cc microsuite_hdsearch_1:/MicroSuite/src/HDSearch/bucket_service/service
+docker cp Makefile microsuite_hdsearch_1:/MicroSuite/src/HDSearch/bucket_service/service
 docker cp mid_tier_server.cc microsuite_hdsearch_1:/MicroSuite/src/HDSearch/mid_tier_service/service
 docker cp load_generator_open_loop.cc microsuite_hdsearch_1:/MicroSuite/src/HDSearch/load_generator
 docker cp atomics.cpp microsuite_hdsearch_1:/MicroSuite/src/HDSearch/mid_tier_service/src
