@@ -84,6 +84,9 @@ struct ThreadData {////BAZO TO DIKO TOU SEED
     int queryId;
     int seed;
     std::ofstream* outFile;
+    ADDRINT memEa;
+    UINT32 memSize;
+    bool    hasMemInfo;   // σημαία ότι έχει μπει info
 };
 
 static TLS_KEY tls_key;
@@ -97,6 +100,7 @@ VOID ThreadStart(THREADID tid, CONTEXT* ctxt, INT32 flags, VOID* v) {
     data->seed = 42;
     std::string filename = "Outfile_inj_" + std::to_string(tid) + ".txt";
     data->outFile = new std::ofstream(filename.c_str());
+    data->hasMemInfo = false;
     PIN_SetThreadData(tls_key, data, tid);
 }
 
@@ -213,12 +217,22 @@ bool IsArithmeticLogicInstruction(INS ins) {
 
 
 
-VOID FI_InjectFault_Mem(const string *disasm,VOID * ip, VOID *memp, UINT32 size,THREADID tid)
+VOID FI_InjectFault_Mem(const string *disasm,VOID * ip,THREADID tid)
 {
-   // PIN_GetLock(&globalLock, tid);
-     //   ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
+
+    PIN_GetLock(&globalLock, tid);
+    if ((rand() % 100) >=70)return; // 30% πιθανότητα
+    PIN_ReleaseLock(&globalLock);
+      ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
   //  if (tdata && (tdata->inject)) {
     // Identify the routine containing this instruction
+    if (!tdata->hasMemInfo) {
+        delete disasm;
+        return;
+    }
+    ADDRINT memp   = tdata->memEa;
+    UINT32 size  = tdata->memSize;
+    tdata->hasMemInfo = false;  // καταναλώνουμε το info
         PIN_LockClient();
         RTN rtn = RTN_FindByAddress(reinterpret_cast<ADDRINT>(ip));
         PIN_UnlockClient();
@@ -279,26 +293,39 @@ VOID InstructionInstrumentation(INS ins, VOID *v) {
      //   return;
    ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-//    if (!isValidInst(ins))
- //       return;
+    if (!isValidInst(ins))
+        return;
     if (!(IsArithmeticLogicInstruction(ins))) // Select a r>) {
         return; // Skip non-arithmetic/logic instructions
-    if (INS_IsMemoryWrite(ins)) {
+    if (KnobInjectMem.Value() == 1 && INS_IsMemoryWrite(ins)) {
 
 //       std::string *disasm = new std::string( INS_Disassemble(ins) );
-        string *d = new string( INS_Disassemble(ins) );
-        if (d->empty()) {
-            delete d;
-            return;
-        }
-       INS_InsertCall(
-      ins, IPOINT_AFTER, (AFUNPTR)FI_InjectFault_Mem,
-      IARG_PTR, d,          // pass the disassembly string
-      IARG_ADDRINT, INS_Address(ins),
-      IARG_MEMORYWRITE_EA,
-      IARG_MEMORYWRITE_SIZE,
-      IARG_THREAD_ID,
-      IARG_END);
+        // 1) Στο IPOINT_BEFORE αποθηκεύουμε EA & size στο ThreadData
+        INS_InsertCall(
+            ins, IPOINT_BEFORE, (AFUNPTR)+[](
+                THREADID tid,
+                ADDRINT ea,
+                UINT32 size) {
+              auto *td = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
+              td->memEa     = ea;
+              td->memSize   = size;
+              td->hasMemInfo= true;
+            },
+            IARG_THREAD_ID,
+            IARG_MEMORYWRITE_EA,
+            IARG_MEMORYWRITE_SIZE,
+            IARG_END
+        );
+
+        // 2) Στο IPOINT_AFTER κάνουμε το fault‐injection,
+        //    διαβάζοντας EA & size από το ThreadData
+        INS_InsertCall(
+            ins, IPOINT_AFTER, AFUNPTR(FI_InjectFault_Mem),
+            IARG_PTR,        new std::string(INS_Disassemble(ins)),
+            IARG_ADDRINT,    INS_Address(ins),
+            IARG_THREAD_ID,
+            IARG_END
+        );
       return;
     }
     if (KnobInjectMem.Value()) { //if option is 1 inject only on memomry instructions
@@ -324,7 +351,7 @@ VOID InstructionInstrumentation(INS ins, VOID *v) {
             LOG("!!!!!!!!!REGNOTVALID: inst " + INS_Disassemble(ins) + "!!!!!!!!!!!!!\n");
             return;
       }
-
+    if (REG_is_xmm(reg)||REG_is_ymm(reg)) {return;}
     INS_InsertCall(
         ins, IPOINT_AFTER, (AFUNPTR)InjectBitFlip,
         IARG_INST_PTR, // Pass the instruction pointer
@@ -334,6 +361,7 @@ VOID InstructionInstrumentation(INS ins, VOID *v) {
         IARG_END
     );
 }
+/*
 // Record each control-flow instruction to the thread's output file
 VOID RecordBranch(ADDRINT ip, BOOL taken, ADDRINT target, THREADID tid){
 ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
@@ -358,7 +386,7 @@ VOID InstructionInstrumentationBranch(INS ins, VOID *v) {
         );
     }
 }
-
+*/
 
 // Function to execute when the program ends
 VOID Fini(INT32 code, VOID *v) {
@@ -374,6 +402,7 @@ int main(int argc, char *argv[]) {
         std::cerr << "This Pintool does fault injection!" << std::endl;
         return 1; // Exit if initialization fails
     }
+    srand(time(NULL)); // seed the randomness once
     PIN_InitLock(&pinLock);
     PIN_InitLock(&globalLock);
     tls_key = PIN_CreateThreadDataKey(NULL);
@@ -391,7 +420,7 @@ int main(int argc, char *argv[]) {
     // Εγγραφή instrumentation για routines (για την ανίχνευση των ορίων του w>
    // RTN_AddInstrumentFunction(RoutineInstrumentation, NULL);
 
-    INS_AddInstrumentFunction(InstructionInstrumentationBranch, NULL);
+ //   INS_AddInstrumentFunction(InstructionInstrumentationBranch, NULL);
     INS_AddInstrumentFunction(InstructionInstrumentation, 0); // Register the instrumentation function
     PIN_AddFiniFunction(Fini, 0); // Register the finalization function
 

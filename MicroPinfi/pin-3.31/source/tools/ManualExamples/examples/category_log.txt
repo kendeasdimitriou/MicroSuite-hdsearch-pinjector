@@ -1,0 +1,13 @@
+WIDENOP->nop edx, edi
+LOGICAL->xor edi, edi
+DATAXFER->mov qword ptr [r15+0x2a90], rdi
+POP->pop rsi
+FLAGOP->lahf 
+PUSH->push rsp
+UNCOND_BR->jmp 0x8
+MISC->lea rdi, ptr [0x404030]
+SHIFT->sar rax, 0x3
+CALL->call qword ptr [r15+0x29b8]
+BINARY->cmp dword ptr [rdi-0x10], 0x4
+NOP->nop
+COND_BR->jrcxz 0xf

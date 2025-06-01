@@ -1,2 +1,2 @@
-Injection at MEMORY instruction: 0x0x4011b2, Memory: 0x7ffe7f455adc, Original Value: 0xa, Mask: 0x8, Injected Value: 0x2
-Injection at MEMORY instruction: 0x0x4011b6, Memory: 0x7ffe7f455ad0, Original Value: 0x0, Mask: 0x4, Injected Value: 0x400
+[Thread 0] Routine: main Instruction:add dword ptr [rbp-0x4], 0x1 Injection at MEMORY instruction: 0x0x4011b2, Memory: 7ffe20f2273c, Original Value: 0xb, Mask: 0x1, Injected Value: 0x1000b
+[Thread 0] Routine: main Instruction:add dword ptr [rbp-0x10], 0x1 Injection at MEMORY instruction: 0x0x4011b6, Memory: 7ffe20f22730, Original Value: 0x1, Mask: 0x8, Injected Value: 0x9

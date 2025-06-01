@@ -1,0 +1,129 @@
+ Disas: push rbp
+ Disas: mov rbp, rsp
+ Disas: sub rsp, 0x30
+ Disas: mov qword ptr [rbp-0x18], rdi
+ Disas: mov qword ptr [rbp-0x20], rsi
+ Disas: lea rdx, ptr [rbp-0x20]
+ Disas: lea rax, ptr [rbp-0x18]
+ Disas: mov rsi, rdx
+ Disas: mov rdi, rax
+ Disas: call 0x4017e6
+ Disas: test al, al
+ Disas: jz 0x401559
+ Disas: mov rax, qword ptr [rbp-0x18]
+ Disas: jmp 0x4015ac
+ Disas: mov rax, qword ptr [rbp-0x18]
+ Disas: mov qword ptr [rbp-0x8], rax
+ Disas: jmp 0x401586
+ Disas: lea rax, ptr [rbp-0x18]
+ Disas: mov rdi, rax
+ Disas: call 0x401822
+ Disas: mov rdx, rax
+ Disas: lea rax, ptr [rbp-0x20]
+ Disas: mov rsi, rax
+ Disas: mov rdi, rdx
+ Disas: call 0x401842
+ Disas: test al, al
+ Disas: jnz 0x401563
+ Disas: mov rax, qword ptr [rbp-0x8]
+ Disas: leave 
+ Disas: ret 
+ Disas: mov rdx, qword ptr [rbp-0x8]
+ Disas: mov rcx, qword ptr [rbp-0x18]
+ Disas: lea rax, ptr [rbp-0x21]
+ Disas: mov rsi, rcx
+ Disas: mov rdi, rax
+ Disas: call 0x4014ea
+ Disas: test al, al
+ Disas: jz 0x401586
+ Disas: mov rax, qword ptr [rbp-0x18]
+ Disas: mov qword ptr [rbp-0x8], rax
+ Disas: lea rax, ptr [rbp-0x18]
+ Disas: mov rdi, rax
+ Disas: call 0x401822
+push rbp
+mov rbp, rsp
+sub rsp, 0x30
+mov qword ptr [rbp-0x18], rdi
+mov qword ptr [rbp-0x20], rsi
+lea rdx, ptr [rbp-0x20]
+lea rax, ptr [rbp-0x18]
+mov rsi, rdx
+mov rdi, rax
+call 0x4017e6
+test al, al
+jz 0x401559
+mov rax, qword ptr [rbp-0x18]
+jmp 0x4015ac
+mov rax, qword ptr [rbp-0x18]
+mov qword ptr [rbp-0x8], rax
+jmp 0x401586
+lea rax, ptr [rbp-0x18]
+mov rdi, rax
+call 0x401822
+mov rdx, rax
+lea rax, ptr [rbp-0x20]
+mov rsi, rax
+mov rdi, rdx
+call 0x401842
+test al, al
+jnz 0x401563
+mov rax, qword ptr [rbp-0x8]
+leave 
+ret 
+mov rdx, qword ptr [rbp-0x8]
+mov rcx, qword ptr [rbp-0x18]
+lea rax, ptr [rbp-0x21]
+mov rsi, rcx
+mov rdi, rax
+call 0x4014ea
+test al, al
+jz 0x401586
+mov rax, qword ptr [rbp-0x18]
+mov qword ptr [rbp-0x8], rax
+lea rax, ptr [rbp-0x18]
+mov rdi, rax
+call 0x401822
+6: push rbp
+6: mov rbp, rsp
+6: sub rsp, 0x30
+6: mov qword ptr [rbp-0x18], rdi
+6: mov qword ptr [rbp-0x20], rsi
+6: lea rdx, ptr [rbp-0x20]
+6: lea rax, ptr [rbp-0x18]
+6: mov rsi, rdx
+6: mov rdi, rax
+6: call 0x4017e6
+6: test al, al
+6: jz 0x401559
+6: mov rax, qword ptr [rbp-0x18]
+6: jmp 0x4015ac
+6: mov rax, qword ptr [rbp-0x18]
+6: mov qword ptr [rbp-0x8], rax
+6: jmp 0x401586
+6: lea rax, ptr [rbp-0x18]
+6: mov rdi, rax
+6: call 0x401822
+6: mov rdx, rax
+6: lea rax, ptr [rbp-0x20]
+6: mov rsi, rax
+6: mov rdi, rdx
+6: call 0x401842
+6: test al, al
+6: jnz 0x401563
+6: mov rax, qword ptr [rbp-0x8]
+6: leave 
+6: ret 
+6: mov rdx, qword ptr [rbp-0x8]
+6: mov rcx, qword ptr [rbp-0x18]
+6: lea rax, ptr [rbp-0x21]
+6: mov rsi, rcx
+6: mov rdi, rax
+6: call 0x4014ea
+6: test al, al
+6: jz 0x401586
+6: mov rax, qword ptr [rbp-0x18]
+6: mov qword ptr [rbp-0x8], rax
+6: lea rax, ptr [rbp-0x18]
+6: mov rdi, rax
+6: call 0x401822

@@ -67,6 +67,7 @@ Now we need to open a new terminal
 ```
 docker ps
 cd microsuite
+cd MicroSuite-hdsearch-pinjector
 docker cp MicroPinfi microsuite_hdsearch_1:/
 ```
 ## Send updated files
@@ -76,9 +77,19 @@ docker cp bucket_server.cc microsuite_hdsearch_1:/MicroSuite/src/HDSearch/bucket
 docker cp mid_tier_server.cc microsuite_hdsearch_1:/MicroSuite/src/HDSearch/mid_tier_service/service
 docker cp load_generator_open_loop.cc microsuite_hdsearch_1:/MicroSuite/src/HDSearch/load_generator
 docker cp atomics.cpp microsuite_hdsearch_1:/MicroSuite/src/HDSearch/mid_tier_service/src
+docker cp dist_calc.cpp microsuite_hdsearch_1:/MicroSuite/src/HDSearch/bucket_service/src
+docker cp dist_calc.h microsuite_hdsearch_1:/MicroSuite/src/HDSearch/bucket_service/src
+docker cp run_FPU.sh microsuite_hdsearch_1:/
 ```
+## If you want Bucket with shadow threads
+```
+docker cp bucket_server_shadow.cc microsuite_hdsearch_1:/MicroSuite/src/HDSearch/bucket_service/service
+```
+
+
 At this point we need to login on the docker instance to execute our benchmark
 ```
+cd ..
 cd MicroSuite
 sudo docker-compose exec hdsearch sh
 ```
@@ -111,7 +122,7 @@ mv ./image_feature_vectors.dat /home
 cd /MicroSuite/src/HDSearch/bucket_service/service
 make clean
 make
-./bucket_server /home/image_feature_vectors.dat 0.0.0.0:50050 2 -1 0 1
+./bucket_server /home/image_feature_vectors.dat 0.0.0.0:50050 2 -1 0 1 &
 
 ```
 ### Mid Tier Service - sudo command not found...
@@ -121,7 +132,7 @@ make clean
 make
 touch bucket_servers_IP.txt
 echo "0.0.0.0:50050" > bucket_servers_IP.txt
-./mid_tier_server 1 13 1 1 bucket_servers_IP.txt /home/image_feature_vectors.dat 2 0.0.0.0:50051 1 4 4 0   
+./mid_tier_server 1 13 1 1 bucket_servers_IP.txt /home/image_feature_vectors.dat 2 0.0.0.0:50051 1 4 4 0 &
 
 ```
 ### Client 
@@ -130,13 +141,21 @@ cd /MicroSuite/src/HDSearch/load_generator
 make clean
 make
 mkdir ./results
-./load_generator_open_loop /home/image_feature_vectors.dat ./results/ 1 30 100 0.0.0.0:50051 dummy1 dummy2 dummy3
+./load_generator_open_loop /home/image_feature_vectors.dat ./results/ 1 2000 0.01 0.0.0.0:50051 dummy1 dummy2 dummy3
 
 ```
 # (4) ** Using Pin injection tools **
 ```
-pin -t /MicroPinfi/pin-3.31/source/tools/ManualExamples/obj-intel64/[injection tool name you want to use].so -- ./sevice
+pin -t /MicroPinfi/pin-3.31/source/tools/ManualExamples/obj-intel64/[injection tool name you want to use].so -- ./bucket
 
 example:
-pin -t /MicroPinfi/pin-3.31/source/tools/ManualExamples/obj-intel64/fault_injection_specific_query_instr_forked_application2.so -- ./bucket_server /home/image_feature_vectors.dat 0.0.0.0:50050 2 -1 0 1
+ pin -t /MicroPinfi/pin-3.31/source/tools/ManualExamples/obj-intel64/micro_pinfi_FPU.so -n 500 -- ./bucket_server /home/image_feature_vectors.dat 0.0.0.0:50050 2 -1 0 1 &
+```
+
+This Script runs FPU injections automatically
+**	REMEMBER TO COMPILE with -g -O0     **
+# (5) ** RUN SCRIPT **
+```
+chmod +x run_FPU.sh
+./run_FPU.sh
 ```

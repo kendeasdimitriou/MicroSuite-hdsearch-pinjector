@@ -18,12 +18,21 @@ std::ofstream injection_commands;
 KNOB<BOOL> KnobInjectMem(KNOB_MODE_WRITEONCE, "pintool", "inject_only_mem", "0", "Enable memory injection (1=yes, 0=no)");
 PIN_LOCK globalLock;
 PIN_LOCK pinLock;
+static UINT64 globalInstCount = 0;
+static UINT64 globalInstCountinject = 0;
+UINT64 v=-1;
 /*
-int generateRandomNumber() {
+int generateRandomNumberNonDetermenistic() {
     // Seed with a combination of steady clock and current time for better randomness
     static std::mt19937 generator(
         std::chrono::steady_clock::now().time_since_epoch().count()
     );
+
+    // 2) Warm up the engine exactly once (discard first 10 draws):
+    static bool warmed = []{
+        generator.discard(10);
+        return true;
+    }();
 
     // Define the range of random numbers (e.g., 1 to 100)
     std::uniform_int_distribution<int> distribution(1, 100);
@@ -31,6 +40,30 @@ int generateRandomNumber() {
     return distribution(generator);
 }
 */
+int generateRandomNumberNonDeterministic() {
+    // 1) Create and seed + warm up the engine exactly once:
+    static std::mt19937 generator = []{
+        // Seed from a high-resolution clock
+        std::mt19937 g{ 
+            static_cast<std::uint32_t>(
+                std::chrono::steady_clock::now()
+                  .time_since_epoch()
+                  .count()
+            )
+        };
+        // Discard the first 10 outputs
+        g.discard(10);
+        return g;
+    }();
+
+    // 2) Static distribution so it’s only constructed once
+    static std::uniform_int_distribution<int> distribution(1, 100);
+
+    // 3) Draw and return
+    return distribution(generator);
+}
+
+
 
 int seed=15;
 int generateRandomNumber(int seed1) {
@@ -81,9 +114,13 @@ return true;
 struct ThreadData {////BAZO TO DIKO TOU SEED
     bool inject;
 //    bool print;
+    bool isShadowThread;
     int queryId;
     int seed;
-    std::ofstream* outFile;
+//    std::ofstream* outFile;
+    ADDRINT memEa;
+    UINT32 memSize;
+    bool    hasMemInfo;   // σημαία ότι έχει μπει info
 };
 
 static TLS_KEY tls_key;
@@ -95,35 +132,57 @@ VOID ThreadStart(THREADID tid, CONTEXT* ctxt, INT32 flags, VOID* v) {
   //  data->print = false;
     data->queryId = 0;
     data->seed = 42;
-    std::string filename = "Outfile_inj_" + std::to_string(tid) + ".txt";
-    data->outFile = new std::ofstream(filename.c_str());
+    data->isShadowThread =false;
+    //std::string filename = "Outfile_inj_" + std::to_string(tid) + ".txt";
+   // data->outFile = new std::ofstream(filename.c_str());
+    data->hasMemInfo = false;
     PIN_SetThreadData(tls_key, data, tid);
 }
 
 VOID ThreadFini(THREADID tid, const CONTEXT* ctxt, INT32 code, VOID* v) {
     ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
     if (tdata) {
-        if (tdata->outFile) {
-            tdata->outFile->close();
-            delete tdata->outFile;
-        }
+       // if (tdata->outFile) {
+        //    tdata->outFile->close();
+         //   delete tdata->outFile;
+       // }
         delete tdata;
     }
     //delete data;
 }
-/*
+
 // Analysis function που θέτει το flag σε true (εισαγωγή στο window)
 // Θα κληθεί μετά την εκτέλεση της FaultInjectionBegin
 VOID SetInjectTrue(THREADID tid) {
     ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
     tdata->inject = true;
 }
-
+//static UINT64 globalInstCount = 0;
+//static UINT64 globalInstCountinject = 0;
+//UINT64 v=-1;
 // Analysis function που θέτει το flag σε false (έξοδος από το window)
 // Θα κληθεί πριν την εκτέλεση της FaultInjectionEnd
 VOID SetInjectFalse(THREADID tid) {
     ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
+std::cout << "thread instr count = " <<globalInstCountinject<<"Shadow thread instr count ="<<globalInstCount<< std::endl;
     tdata->inject = false;
+if(tdata->isShadowThread==false){
+    globalInstCount = 0;
+    globalInstCountinject = 0;
+    v=-1;
+}
+}
+//isshadow
+
+// Analysis callback για να μαρκάρουμε το shadow thread
+VOID MarkShadowThread(THREADID tid) {
+    ThreadData* td = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
+    if (td) {
+        td->isShadowThread = true;
+std::cout << "inside shadow thread" <<std::endl;
+         //       std::cout << "inside shadow thread" <<globalInstCountinject<<globalInstCount<< std::endl;
+        // Αν θέλεις, μπορείς εδώ να ανοίξεις και το outFile κτλ.
+    }
 }
 
 // Callback που "interpose" την BeginRequest και αποθηκεύει το query id στο TLS
@@ -135,6 +194,7 @@ VOID BeginRequestInterpose(int query_id, THREADID tid)
     tdata->seed = query_id;
     // printf("Thread %u finished query with id: %d\n", tid, query_id);
 }
+
 
 VOID RoutineInstrumentation(RTN rtn, VOID* v) {
     std::string name = RTN_Name(rtn);
@@ -183,8 +243,18 @@ VOID RoutineInstrumentation(RTN rtn, VOID* v) {
             IARG_END);
         RTN_Close(rtn);
     }
+    if (RTN_Name(rtn) == "shadow_entry") {
+        RTN_Open(rtn);
+        RTN_InsertCall(
+            rtn, IPOINT_BEFORE,
+            (AFUNPTR)MarkShadowThread,
+            IARG_THREAD_ID,
+            IARG_END
+        );
+        RTN_Close(rtn);
+    }
 }
-*/
+
 
 // Function to check if an instruction belongs to arithmetic or logic operations(ALU)
 // https://github.com/jingpu/pintools/blob/master/extras/xed2-ia32/include/xed-category-enum.h
@@ -213,17 +283,27 @@ bool IsArithmeticLogicInstruction(INS ins) {
 
 
 
-VOID FI_InjectFault_Mem(const string *disasm,VOID * ip, VOID *memp, UINT32 size,THREADID tid)
+VOID FI_InjectFault_Mem(const string *disasm,VOID * ip,THREADID tid)
 {
-   // PIN_GetLock(&globalLock, tid);
-     //   ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
+
+    PIN_GetLock(&globalLock, tid);
+    if ((rand() % 100) >=70)return; // 30% πιθανότητα
+    PIN_ReleaseLock(&globalLock);
+      ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
   //  if (tdata && (tdata->inject)) {
     // Identify the routine containing this instruction
+    if (!tdata->hasMemInfo) {
+        delete disasm;
+        return;
+    }
+    ADDRINT memp   = tdata->memEa;
+    UINT32 size  = tdata->memSize;
+    tdata->hasMemInfo = false;  // καταναλώνουμε το info
         PIN_LockClient();
         RTN rtn = RTN_FindByAddress(reinterpret_cast<ADDRINT>(ip));
         PIN_UnlockClient();
         std::string routineName = RTN_Valid(rtn) ? RTN_Name(rtn) : std::string("<unknown>");   
-        PIN_GetLock(&globalLock, tid);
+        PIN_GetLock(&globalLock, tid+1);
         injection_commands << "[Thread " << tid << "] Routine: " << routineName <<" Instruction:"<< disasm->c_str()<<" Injection at MEMORY instruction: 0x" << std::hex << ip
         << ", Memory: " << std::hex << memp
         << ", Original Value: 0x" << std::hex << (*((int*)memp));// << std::endl;
@@ -247,28 +327,80 @@ VOID FI_InjectFault_Mem(const string *disasm,VOID * ip, VOID *memp, UINT32 size,
     delete disasm;
     //}
 }
-
+//static UINT64 globalInstCount = 0;
+//static UINT64 globalInstCountinject = 0;
+//UINT64 v=-1;
+static std::mt19937_64 rng( std::random_device{}() );
+/////////elexo v////////////////
+VOID selectInjectionSpots(THREADID tid){
+    PIN_GetLock(&globalLock, tid+1);
+    std::uniform_int_distribution<UINT64> dist(0, globalInstCount - 1);
+    // Παίρνουμε ένα τυχαίο v
+    v = dist(rng);
+    std::cout << "Selected injection spot v = " 
+              << v << "global isnt count = "<<globalInstCount
+              << std::endl;
+    PIN_ReleaseLock(&globalLock);
+}
 // Injects a single bit flip into the specified register
-VOID InjectBitFlip(ADDRINT ip, UINT32 regIndex, REG reg, CONTEXT *ctxt) {
+VOID InjectBitFlip(ADDRINT ip, UINT32 regIndex, REG reg, CONTEXT *ctxt,THREADID tid) {
+   ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
+   if (!tdata || !tdata->inject)return;
+   if (tdata->isShadowThread){
+    PIN_GetLock(&globalLock, tid+1);
+    const std::string filename = "shadow_ips.txt";
+    std::ofstream ofs(filename, std::ios::out | std::ios::app);
+    if (ofs) {
+        ofs << std::hex << ip << '\n';
+        // ofs.close() θα κληθεί αυτόματα στο destructor
+    } else {
+        std::cerr << "Failed to open file " 
+                  << filename 
+                  << " for writing shadow IPs\n";
+    }
+    PIN_ReleaseLock(&globalLock);
+      return;
+    }
+    //std::cout << "thread that inject "
+     //         << std::endl;
+    if(v == UINT64(-1))selectInjectionSpots(tid);
+    if(globalInstCountinject!=v){
+      globalInstCountinject++;
+      return;
+    }
+    globalInstCountinject++;
+   //return;/////////////////////
     if(REG_valid(reg)){
     reg = REG_FullRegName(reg);
     ADDRINT regValue = PIN_GetContextReg(ctxt, reg); // Get the current value of the register
-    UINT32 injectBit = generateRandomNumber(seed) % (sizeof(UINT32) * 8); // MOST SDCs FOUND ON LEAST SIGNIFICANT BITS(UINT32)
+    PIN_GetLock(&globalLock, tid+1);
+    UINT32 injectBit = /*generateRandomNumber(seed)*/generateRandomNumberNonDeterministic() % (sizeof(UINT32) * 8); // MOST SDCs FOUND ON LEAST SIGNIFICANT BITS(UINT32)
+    PIN_ReleaseLock(&globalLock);
     ADDRINT mask = 1UL << injectBit; // Create a mask for the bit flip
     ADDRINT injectedValue = regValue ^ mask; // Apply the bit flip
     PIN_SetContextReg(ctxt, reg, injectedValue); // Update the register with the new value
 
     // Log the details of the injection// LOGOUT
+    PIN_GetLock(&globalLock, tid+1);
     injection_commands << "Injection at instruction: 0x" << std::hex << ip
            << ", Register: " << REG_StringShort(reg)
            << ", Original Value: 0x" << std::hex << regValue
            << ", Mask: 0x" << std::hex << mask
            << ", Injected Value: 0x" << std::hex << injectedValue
            << std::endl;
+    PIN_ReleaseLock(&globalLock);
     PIN_ExecuteAt(ctxt);
  }
 }
-
+//static UINT64 globalInstCount = 0;
+    VOID CountInstructionWithLock(THREADID tid) {
+        ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
+        if (!tdata || !tdata->inject)return;
+        if (!tdata->isShadowThread)return;
+        PIN_GetLock(&pinLock, tid+1);        // παίρνουμε το lock (ίδιος με thread id)
+        globalInstCount++;
+        PIN_ReleaseLock(&pinLock);           // απελευθερώνουμε
+    }
 
 
 // Instruments write registers of each instruction for fault injection
@@ -279,26 +411,39 @@ VOID InstructionInstrumentation(INS ins, VOID *v) {
      //   return;
    ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-//    if (!isValidInst(ins))
- //       return;
+    if (!isValidInst(ins))
+        return;
     if (!(IsArithmeticLogicInstruction(ins))) // Select a r>) {
         return; // Skip non-arithmetic/logic instructions
-    if (INS_IsMemoryWrite(ins)) {
+    if (KnobInjectMem.Value() && INS_IsMemoryWrite(ins)) {
 
 //       std::string *disasm = new std::string( INS_Disassemble(ins) );
-        string *d = new string( INS_Disassemble(ins) );
-        if (d->empty()) {
-            delete d;
-            return;
-        }
-       INS_InsertCall(
-      ins, IPOINT_AFTER, (AFUNPTR)FI_InjectFault_Mem,
-      IARG_PTR, d,          // pass the disassembly string
-      IARG_ADDRINT, INS_Address(ins),
-      IARG_MEMORYWRITE_EA,
-      IARG_MEMORYWRITE_SIZE,
-      IARG_THREAD_ID,
-      IARG_END);
+        // 1) Στο IPOINT_BEFORE αποθηκεύουμε EA & size στο ThreadData
+        INS_InsertCall(
+            ins, IPOINT_BEFORE, (AFUNPTR)+[](
+                THREADID tid,
+                ADDRINT ea,
+                UINT32 size) {
+              auto *td = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
+              td->memEa     = ea;
+              td->memSize   = size;
+              td->hasMemInfo= true;
+            },
+            IARG_THREAD_ID,
+            IARG_MEMORYWRITE_EA,
+            IARG_MEMORYWRITE_SIZE,
+            IARG_END
+        );
+
+        // 2) Στο IPOINT_AFTER κάνουμε το fault‐injection,
+        //    διαβάζοντας EA & size από το ThreadData
+        INS_InsertCall(
+            ins, IPOINT_AFTER, AFUNPTR(FI_InjectFault_Mem),
+            IARG_PTR,        new std::string(INS_Disassemble(ins)),
+            IARG_ADDRINT,    INS_Address(ins),
+            IARG_THREAD_ID,
+            IARG_END
+        );
       return;
     }
     if (KnobInjectMem.Value()) { //if option is 1 inject only on memomry instructions
@@ -324,6 +469,17 @@ VOID InstructionInstrumentation(INS ins, VOID *v) {
             LOG("!!!!!!!!!REGNOTVALID: inst " + INS_Disassemble(ins) + "!!!!!!!!!!!!!\n");
             return;
       }
+    if (REG_is_xmm(reg)||REG_is_ymm(reg)) {return;}
+
+//count possible injection instructions
+    INS_InsertCall(
+        ins, IPOINT_BEFORE,
+        AFUNPTR(CountInstructionWithLock),
+        IARG_THREAD_ID,
+        IARG_END
+    );
+
+
 
     INS_InsertCall(
         ins, IPOINT_AFTER, (AFUNPTR)InjectBitFlip,
@@ -331,9 +487,11 @@ VOID InstructionInstrumentation(INS ins, VOID *v) {
         IARG_UINT32, randW, // Pass the register index
         IARG_UINT32, reg, // Pass the register identifier
         IARG_CONTEXT, // Pass the full execution context
+        IARG_THREAD_ID,
         IARG_END
     );
 }
+/*
 // Record each control-flow instruction to the thread's output file
 VOID RecordBranch(ADDRINT ip, BOOL taken, ADDRINT target, THREADID tid){
 ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
@@ -358,7 +516,7 @@ VOID InstructionInstrumentationBranch(INS ins, VOID *v) {
         );
     }
 }
-
+*/
 
 // Function to execute when the program ends
 VOID Fini(INT32 code, VOID *v) {
@@ -374,6 +532,7 @@ int main(int argc, char *argv[]) {
         std::cerr << "This Pintool does fault injection!" << std::endl;
         return 1; // Exit if initialization fails
     }
+    srand(time(NULL)); // seed the randomness once
     PIN_InitLock(&pinLock);
     PIN_InitLock(&globalLock);
     tls_key = PIN_CreateThreadDataKey(NULL);
@@ -389,9 +548,9 @@ int main(int argc, char *argv[]) {
 
 
     // Εγγραφή instrumentation για routines (για την ανίχνευση των ορίων του w>
-   // RTN_AddInstrumentFunction(RoutineInstrumentation, NULL);
+    RTN_AddInstrumentFunction(RoutineInstrumentation, NULL);
 
-    INS_AddInstrumentFunction(InstructionInstrumentationBranch, NULL);
+ //   INS_AddInstrumentFunction(InstructionInstrumentationBranch, NULL);
     INS_AddInstrumentFunction(InstructionInstrumentation, 0); // Register the instrumentation function
     PIN_AddFiniFunction(Fini, 0); // Register the finalization function
 

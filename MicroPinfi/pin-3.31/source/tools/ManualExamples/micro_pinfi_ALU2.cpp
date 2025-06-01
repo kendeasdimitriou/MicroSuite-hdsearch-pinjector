@@ -31,8 +31,20 @@ PIN_LOCK pinLock;
 static ADDRINT parentPID = 0;
 // Flag που λέει αν είμαστε στο child process
 static bool isChildProcess = false;
-static bool inject = false;
+//static bool inject = false;
 //uint64_t seed = 42; // Μπορείς να αλλάξεις το seed
+static INT *sharedValue = nullptr;
+static UINT32 numInject = 0;
+
+//KNOB<BOOL> KnobInjectMem(KNOB_MODE_WRITEONCE, "pintool", "inject_only_mem", "0", "Enable memory injection (1=yes, 0=no)");
+KNOB<UINT32> KnobNumInjections(
+    KNOB_MODE_WRITEONCE,
+    "pintool",               // category
+    "n",                     // switch name: -n
+    "0",                     // default value
+    "Number of bit‐flip injections to perform");
+
+
 
 int generateRandomNumber(int seed) {
     // Παράμετροι του LCG (Numerical Recipes)
@@ -41,6 +53,8 @@ int generateRandomNumber(int seed) {
     // Περιορισμός στο διάστημα [1, 100]
     return 1 + (seed1 % 100);
 }
+
+
 
 
 int generateRandomNumberNonDeterministic() {
@@ -66,13 +80,19 @@ int generateRandomNumberNonDeterministic() {
     return distribution(generator);
 }
 
+
+
 struct ThreadData {////BAZO TO DIKO TOU SEED
     bool inject;
-//    bool print;
+    bool trace;
+    UINT64 InstCount;
+    std::vector<UINT64> injectionSpots;
+    bool select_spots;
     int queryId;
     int seed;
     bool isChild;      // <-- νέο πεδίο: true αν είμαστε στο child process
 };
+
 
 static TLS_KEY tls_key;
 
@@ -83,34 +103,45 @@ VOID BeforeFork(THREADID tid, const CONTEXT* ctxt, VOID* v) {
     parentPID = PIN_GetPid();
   //  ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
  //   tdata->isChild = false;
+    sharedValue = (INT*)mmap(
+      nullptr,
+      sizeof(INT),
+      PROT_READ|PROT_WRITE,
+      MAP_SHARED|MAP_ANONYMOUS,
+      -1,
+      0
+    );
+    if (sharedValue == MAP_FAILED) {
+      perror("mmap");
+      PIN_ExitProcess(1);
+    }
+    *sharedValue=0;
     PIN_ReleaseLock(&pinLock);
 }
 
 // Μετά το fork στον parent: βεβαιώσου ότι δεν άλλαξε
 VOID AfterForkInParent(THREADID tid, const CONTEXT* ctxt, VOID* v) {
-    PIN_GetLock(&pinLock, tid+1);
     isChildProcess = false;
     ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
     tdata->isChild = false;
-    inject=true;
-    PIN_ReleaseLock(&pinLock);
 }
 
 // Μετά το fork στο child: σήκωσε το flag
 VOID AfterForkInChild(THREADID tid, const CONTEXT* ctxt, VOID* v) {
-    PIN_GetLock(&pinLock, tid+1);
+  //  PIN_GetLock(&pinLock, tid+1);
     isChildProcess = true;
     ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
     tdata->isChild = true;
-    inject=false;
-    PIN_ReleaseLock(&pinLock);
+//    PIN_ReleaseLock(&pinLock);
 }
 
 
 VOID ThreadStart(THREADID tid, CONTEXT* ctxt, INT32 flags, VOID* v) {
     ThreadData* data = new ThreadData();
     data->inject = false;
-  //  data->print = false;
+    data->trace=false;
+    data->InstCount=0;
+    data->select_spots=false;
     data->queryId = 0;
     data->seed = 0;
     data->isChild = false;
@@ -126,16 +157,32 @@ VOID ThreadFini(THREADID tid, const CONTEXT* ctxt, INT32 code, VOID* v) {
 
 // Analysis function που θέτει το flag σε true (εισαγωγή στο window)
 // Θα κληθεί μετά την εκτέλεση της FaultInjectionBegin
-VOID SetInjectTrue(THREADID tid) {
+VOID SetInjectTrue(int inject_flag,THREADID tid) {
     ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
-    tdata->inject = true;
+    tdata->trace=true;
+    tdata->inject = false;
+  PIN_GetLock(&pinLock, tid + 1);
+    std::cout <<"IN"<<inject_flag<<std::endl;
+    if(inject_flag==1 && !tdata->isChild){tdata->inject = true;std::cout<<"This is parent ? "<<tdata->isChild<<"QUERY: "<<tdata->queryId<<std::endl;}
+  PIN_ReleaseLock(&pinLock);
 }
 
 // Analysis function που θέτει το flag σε false (έξοδος από το window)
 // Θα κληθεί πριν την εκτέλεση της FaultInjectionEnd
 VOID SetInjectFalse(THREADID tid) {
     ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
-    tdata->inject = false;
+    if(tdata->inject==true){
+  PIN_GetLock(&pinLock, tid + 1);
+  std::cout << "This is Parent code. Is it Parent ?"<<!isChildProcess<< "pid = "<<PIN_GetPid()<<"parent counter: "<<tdata->InstCount<<" Query: "<<tdata->queryId<<std::endl;
+  PIN_ReleaseLock(&pinLock);
+        tdata->select_spots=false;
+        tdata->injectionSpots.clear();
+    //    tdata->InstCount = 0;
+        tdata->inject = false;
+    }
+    if(tdata->inject==false){PIN_GetLock(&pinLock, tid + 1);  std::cout << "This is child code. Is it child ?"<<!isChildProcess<< "pid = "<<PIN_GetPid()<<"child counter: "<<tdata->InstCount<<" Query: "<<tdata->queryId<<std::endl;  PIN_ReleaseLock(&pinLock);}
+    tdata->InstCount = 0;
+    tdata->trace=false;
 }
 
 
@@ -157,27 +204,12 @@ VOID RoutineInstrumentation(RTN rtn, VOID *v) {
     //std::cout << "Found FaultInjectionBegin" << std::endl; // Debug output
         RTN_Open(rtn);
         // Μετά την FaultInjectionBegin θέτουμε το flag σε true
-        RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)SetInjectTrue,
-                       IARG_THREAD_ID, IARG_END);
+        RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)SetInjectTrue,
+                     IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
+                     IARG_THREAD_ID, IARG_END);
         RTN_Close(rtn);
     }
     else if(name == "FaultInjectionEnd") {
-   // std::cout << "Found FaultInjectionEnd" << std::endl; // Debug output
-        RTN_Open(rtn);
-        // Πριν την FaultInjectionEnd θέτουμε το flag σε false
-        RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)SetInjectFalse,
-                       IARG_THREAD_ID, IARG_END);
-        RTN_Close(rtn);
-    }   
-     else if(name == "FaultInjectionBegin_parent") {
-   // std::cout << "Found FaultInjectionEnd" << std::endl; // Debug output
-        RTN_Open(rtn);
-        // Πριν την FaultInjectionEnd θέτουμε το flag σε false
-        RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)SetInjectTrue,
-                       IARG_THREAD_ID, IARG_END);
-        RTN_Close(rtn);
-    }
-    else if(name == "FaultInjectionEnd_parent") {
    // std::cout << "Found FaultInjectionEnd" << std::endl; // Debug output
         RTN_Open(rtn);
         // Πριν την FaultInjectionEnd θέτουμε το flag σε false
@@ -237,17 +269,17 @@ bool IsArithmeticLogicInstruction(INS ins) {
     category == XED_CATEGORY_BITBYTE ||
     category == XED_CATEGORY_ROTATE ||
     category == XED_CATEGORY_SHIFT ||
-    category == XED_CATEGORY_BMI1 ||
-    category == XED_CATEGORY_BMI2 ||
+ //   category == XED_CATEGORY_BMI1 ||
+ //   category == XED_CATEGORY_BMI2 ||
     category == XED_CATEGORY_X87_ALU ||
     category == XED_CATEGORY_FMA4 ||
     category == XED_CATEGORY_FP16 ||
     category == XED_CATEGORY_VFMA||
     category ==XED_CATEGORY_BINARY||
     category ==XED_CATEGORY_SSE||
-    category ==XED_CATEGORY_LOGICAL_FP||
-    category ==XED_CATEGORY_CONVERT||
-    category ==XED_CATEGORY_SETCC;
+    category ==XED_CATEGORY_LOGICAL_FP;
+ //   category ==XED_CATEGORY_CONVERT||
+//    category ==XED_CATEGORY_SETCC;
 //CONVERT,SETCC
 }
 bool isDoublePrecision(INS ins){
@@ -351,11 +383,137 @@ else if (x == 4)
 }
 */
 
+
+VOID log_bbl(THREADID tid, ADDRINT addr) {
+ ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
+  if(!tdata->trace||tdata->queryId == 12345){return;}
+  //if (trace == false){ return;}
+  //if(queryId == 12345){  return;}
+  //if(tdata->queryId == 12345 || tdata->queryId == 74881) return;// NOTE: IF YOU HAVE CHILD AND PARENT WORK SIMUTANEOUSLY ADD PINLOCK RELEASEL>  
+if (tdata->isChild) {
+  PIN_LockClient();
+  IMG img = IMG_FindByAddress(addr);
+  //PIN_UnlockClient();
+  SEC sec ;//= SEC_FindByAddress(addr);
+  std::string secName;
+  //PIN_LockClient();
+  RTN rtn = RTN_FindByAddress(addr);
+  //PIN_UnlockClient();
+  if (RTN_Valid(rtn)) {
+    // 2) Get its enclosing section
+    sec = RTN_Sec(rtn);
+    if (SEC_Valid(sec)) {
+        secName = SEC_Name(sec);
+        // …
+    }
+}
+PIN_UnlockClient();
+PIN_GetLock(&pinLock, tid);
+    // … shadow‐only behavior …
+    std::ostringstream fname;
+    fname << "Child_"<< std::dec<<tdata->queryId<<".txt";
+
+    // Serialize the knn_answer stored in reply to file
+    std::ofstream ofs(fname.str(), std::ios::app);
+    if (ofs.is_open()) {
+        // Assuming reply contains a DebugString method for human-readable output
+
+        ofs <<  std::hex << addr          << " module=" << IMG_Name(img)
+          << " section=" << secName
+          << " func=" << (RTN_Valid(rtn) ? RTN_Name(rtn) : "??")<<" QUERY: "<< std::dec<<tdata->queryId
+          <<"\n";
+        ofs.close();
+    } else {
+        fprintf(stderr, "Failed to open file %s for writing knn_answer\n", fname.str().c_str());
+    }
+PIN_ReleaseLock(&pinLock);
+  } else {
+PIN_LockClient();
+IMG img = IMG_FindByAddress(addr);
+//PIN_UnlockClient();
+//SEC sec = SEC_FindByAddress(addr);
+SEC sec ;//= SEC_FindByAddress(addr);
+std::string secName;
+//PIN_LockClient();
+RTN rtn = RTN_FindByAddress(addr);
+//PIN_UnlockClient();
+if (RTN_Valid(rtn)) {
+    // 2) Get its enclosing section
+    sec = RTN_Sec(rtn);
+    if (SEC_Valid(sec)) {
+        secName = SEC_Name(sec);
+        // …
+    }
+}
+PIN_UnlockClient();
+PIN_GetLock(&pinLock, tid);
+    // … normal‐only behavior …
+    std::ostringstream fname;
+    fname << "Parent_"<< std::dec<<tdata->queryId<<".txt";
+
+    // Serialize the knn_answer stored in reply to file
+    std::ofstream ofs(fname.str(), std::ios::app);
+    if (ofs.is_open()) {
+        // Assuming reply contains a DebugString method for human-readable output
+        ofs <<  std::hex << addr          << " module=" << IMG_Name(img)
+          << " section=" << secName
+          << " func=" << (RTN_Valid(rtn) ? RTN_Name(rtn) : "??")<<" QUERY: "<< std::dec<<tdata->queryId
+          << "\n";
+        ofs.close();
+    } else {
+        fprintf(stderr, "Failed to open file %s for writing knn_answer\n", fname.str().c_str());
+    }
+ PIN_ReleaseLock(&pinLock);
+  }
+}
+
+
+
+
+VOID Trace(TRACE trace, VOID *v) {
+    //if (!isValidInst(ins))
+     //   return;
+    //bool hasValid = false;
+    for (BBL bbl = TRACE_BblHead(trace); BBL_Valid(bbl); bbl = BBL_Next(bbl)) {
+//        for (INS ins = BBL_InsHead(bbl); INS_Valid(ins); ins = INS_Next(ins)) {
+        BBL_InsertCall(bbl, IPOINT_AFTER, (AFUNPTR)log_bbl,
+                       IARG_THREAD_ID,
+                       IARG_ADDRINT, BBL_Address(bbl),
+                       IARG_END);
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 VOID ThreadLock(THREADID threadid) // process id
 {
     PIN_GetLock(&pinLock, threadid + 1);
     ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, threadid));
-    if (tdata && (tdata->inject)) {
+    if (tdata && (tdata->trace)) {
         // Υποθέτουμε ότι το x έχει ήδη την τιμή 1..4
 //        int fileIndex = x;
 
@@ -369,7 +527,7 @@ VOID ThreadLock(THREADID threadid) // process id
         std::ofstream dbg1(fname, std::ios::out | std::ios::app);
         if (dbg1) {
            dbg1 << (tdata->isChild ? "Child" : "Parent")
-                << " entering FI at IP=0x. inject = " <<inject
+                << " entering FI at IP=0x. inject = " <<tdata->inject
                 << " tid=" << std::dec << threadid
                 << "\n";
 //           dbg1 << (isChildProcess ? "Child" : "Parent")
@@ -485,9 +643,9 @@ if (activeOut) {
 //////////////////////////////////////////////STYLIANOS
 */
 
-void GetOpCode(VOID *ip, UINT32 size, THREADID tid) {
+void GetOpCode(VOID *ip, UINT32 size,const char* disas, THREADID tid) {
     ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
-    if (tdata && (tdata->inject)) {
+    if (tdata && (tdata->trace)) {
         UINT8 opcodeBytes[64];
         UINT32 fetched = PIN_SafeCopy(opcodeBytes, ip, size);
         if (fetched != size) {
@@ -528,12 +686,12 @@ PIN_UnlockClient();
         } else {
             // Εκτύπωση queryId, διεύθυνσης και opcode bytes
             outfile <<"Routine: "<<routineName<<" " <<tdata->queryId << " 0x" << ip_str 
-                    << " func module insn:";
-            for (UINT32 i = 0; i < fetched; ++i) {
-                outfile << " "
-                        << std::hex << std::setw(2) << std::setfill('0')
-                        << static_cast<unsigned int>(opcodeBytes[i]);
-            }
+                    << " func module insn:"<<disas;
+       //     for (UINT32 i = 0; i < fetched; ++i) {
+       //         outfile << " "
+       //                 << std::hex << std::setw(2) << std::setfill('0')
+       //                 << static_cast<unsigned int>(opcodeBytes[i]);
+            //}
             outfile << std::endl;
             outfile.close();
         }
@@ -541,32 +699,95 @@ PIN_UnlockClient();
 }
 
 
+
+
+
+
+static std::mt19937_64 rng( std::random_device{}() );
+
+VOID selectInjectionSpots(ThreadData* tdata,THREADID tid) {
+//    PIN_GetLock(&globalLock, tid+1);
+    tdata->select_spots=true;
+    // clear any previous selection
+    tdata->injectionSpots.clear();
+    tdata->injectionSpots.reserve(numInject);
+    //globalInstCount = *sharedValue;
+    std::cout << "Selected: true   Instruction count after accessing shared value = "<<*sharedValue<<"Parent Instructio count: "<<tdata->InstCount<<std::endl;
+    // guard: nothing to do if there are no instructions or no injections requested
+    if (numInject == 0) {
+  //      PIN_ReleaseLock(&globalLock);
+        return;
+    }
+
+    // distribution over [0, globalInstCount-1]
+    std::unordered_set<UINT64> uniqueSpots;
+   // std::uniform_int_distribution<UINT64> dist(0, *sharedValue - 1);
+    std::uniform_int_distribution<UINT64> dist(0, *sharedValue - 1);
+
+    while (uniqueSpots.size() < numInject) {
+        uniqueSpots.insert(dist(rng));
+    }
+    tdata->injectionSpots.assign(uniqueSpots.begin(), uniqueSpots.end());
+
+    // fill the vector with numInject random values
+//    for (UINT32 i = 0; i < numInject; ++i) {
+ //       tdata->injectionSpots.push_back(dist(rng));
+  //  }
+
+    // sort ascending so you can binary_search or just iterate in order
+    std::sort(tdata->injectionSpots.begin(), tdata->injectionSpots.end());
+
+    // optional: print them out
+    std::cout << "Selected " << numInject << " injection spots (sorted): ";
+    for (UINT64 spot : tdata->injectionSpots) {
+        std::cout << spot << ' ';
+    }
+    std::cout << "  [Shared InstCount=" << *sharedValue << "]\n";
+
+    //PIN_ReleaseLock(&globalLock);
+}
+
+
+
+
+
 // FI: set the XMM[0-7] context register
 VOID FI_XmmFloatPointFraction (ADDRINT ip, UINT32 regIndex, REG reg, UINT32 isvector, CONTEXT *ctxt,PrecisionType precision,THREADID tid)
 {
-    if(generateRandomNumberNonDeterministic()>50)return;
+
     ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
-    if(tdata && tdata->inject && inject==true) {//Ελεγχος εδω, γιατι το injection window (δηλαδή το flag tdata->inject) μπορεί να αλλάζει δυναμικά κατά την εκτέλεση
+      //Ελεγχος εδω, γιατι το injection window (δηλαδή το flag tdata->inject) μπορεί να αλλάζει δυναμικά κατά την εκτέλεση
 //injection_commands <<"inside2";
-    {
+  //  ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
+    if( tdata->trace==false ||
+          tdata->inject==false)return; //Ελεγχος εδω, γιατι το injection window (δηλαδή το flag tdata->inject) μπορεί να αλλάζει δ>
+    if(tdata->select_spots==false)selectInjectionSpots(tdata,tid);
+ 
+// PIN_ReleaseLock(&globalLock);
+// 3) If no more spots, just return
+    if (tdata->injectionSpots.empty()) {
+        return;
+    }
+
+// 4) Compare against the next spot (the front of the vector):
+    if (tdata->InstCount != tdata->injectionSpots[0]) {
+    // Not our turn yet—skip injection
+       tdata->InstCount++;
+       return;
+    }
+    tdata->injectionSpots.erase(tdata->injectionSpots.begin());
+       tdata->InstCount++;
+    //if(globalInstCountinject!=v){
+    //  globalInstCountinject++;
+   //   return;
+  //  }
+    //tdata->InstCount++;
+
         // Επιλέγουμε αρχείο βάσει process
-        const char* fname = tdata->isChild
-              ? "fi_debug_child.txt"
-        : "fi_debug_parent.txt";
-        std::ofstream dbg1(fname, std::ios::out | std::ios::app);
-     if (dbg1) {
-      dbg1 << (tdata->isChild ? "Child" : "Parent")
-      << " entering FI at IP=0x. inject = "<<inject
-      << "\n";
-      dbg1.close();
-     }
-   }
         UINT32 i =  REG_StringShort(reg)[ REG_StringShort(reg).size() - 1] - '0';
 //        UINT32 p =  REG_StringShort(reg)[ REG_StringShort(reg).size() - 2] - '0';
 // injection_commands <<"xmm"<<i<<" REGISTER";
   //      if(p==1||i>=2){return;}
-
-
 
         CHAR fpContextSpace[FPSTATE_SIZE];
         FPSTATE *fpContext = reinterpret_cast<FPSTATE *>(fpContextSpace);
@@ -574,9 +795,13 @@ VOID FI_XmmFloatPointFraction (ADDRINT ip, UINT32 regIndex, REG reg, UINT32 isve
         PIN_GetContextFPState(ctxt, fpContext);
 
         UINT32 bound_bit = (precision == DoublePrecision) ? 52 : 23;
+        UINT32 inject_bit;
     PIN_GetLock(&globalLock, tid);
+      //  if(i==2||i==3){inject_bit = 2;}//want to inject fraction part}
+       // else if(i!=2||i!=3){
         tdata->seed = generateRandomNumberNonDeterministic();
-        UINT32 inject_bit = ( tdata->seed % bound_bit);//want to inject fraction part
+        inject_bit = ( tdata->seed % bound_bit);//want to inject fraction part
+       // }
     PIN_ReleaseLock(&globalLock);
         uint64_t xmmValue;
         uint64_t injectedValue;
@@ -619,37 +844,171 @@ VOID FI_XmmFloatPointFraction (ADDRINT ip, UINT32 regIndex, REG reg, UINT32 isve
 
         }
         PIN_SetContextFPState(ctxt, fpContext);
-   PIN_GetLock(&globalLock, tid);
-       injection_commands << "Injection at instruction: 0x" << std::hex << ip
+
+
+PIN_LockClient();
+RTN rtn = RTN_FindByAddress(ip);
+PIN_UnlockClient();
+
+
+
+   PIN_GetLock(&globalLock, tid+1);
+
+
+
+//       injection_commands << "Injection at instruction: 0x" << std::hex << ip
+//           << ", Register: " << REG_StringShort(reg) << ", Vector: " << j
+ //          << ", Original Value: 0x" << std::hex << xmmValue
+  //         << ", Mask: 0x" << std::hex << mask
+  //         << ", Injected Value: 0x" << std::hex <<injectedValue
+  //         << " Query ID :" << std::dec <<queryId<< std::endl;
+    std::ostringstream injections;
+    injections << "injection_results.txt";
+
+    // Serialize the knn_answer stored in reply to file
+    std::ofstream ofs(injections.str(), std::ios::app);
+    if (ofs.is_open()) {
+        // Assuming reply contains a DebugString method for human-readable output
+        ofs << "Injection at instruction: 0x" << std::hex << ip
            << ", Register: " << REG_StringShort(reg) << ", Vector: " << j
            << ", Original Value: 0x" << std::hex << xmmValue
            << ", Mask: 0x" << std::hex << mask
            << ", Injected Value: 0x" << std::hex <<injectedValue
-           << " Query ID :" << std::dec <<tdata->queryId<< std::endl;
+           <<" func=" << (RTN_Valid(rtn) ? RTN_Name(rtn) : "??") <<" Query ID :" << std::dec <<tdata->queryId<< std::endl;
+        ofs.close();
+    } else {
+        fprintf(stderr, "Failed to open file %s for writing knn_answer\n", injections.str().c_str());
+    }
    PIN_ReleaseLock(&globalLock);
 
         PIN_ExecuteAt(ctxt);
-   }
 }
+
+
+// Injects a single bit flip into the specified register
+VOID InjectBitFlip(ADDRINT ip,UINT32 regIndex, REG reg, CONTEXT *ctxt,THREADID tid) {
+    ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
+      //Ελεγχος εδω, γιατι το injection window (δηλαδή το flag tdata->inject) μπορεί να αλλάζει δυναμικά κατά την εκτέλεση
+//injection_commands <<"inside2";
+  //  ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
+    if( tdata->trace==false ||
+          tdata->inject==false||tdata->queryId == 12345)return; //Ελεγχος εδω, γιατι το injection window (δηλαδή το flag tdata->inject) μπορεί να αλλάζει δ>
+    if(tdata->select_spots==false)selectInjectionSpots(tdata,tid);
+
+// PIN_ReleaseLock(&globalLock);
+// 3) If no more spots, just return
+    if (tdata->injectionSpots.empty()) {
+        return;
+    }
+
+// 4) Compare against the next spot (the front of the vector):
+    if (tdata->InstCount != tdata->injectionSpots[0]) {
+    // Not our turn yet—skip injection
+       tdata->InstCount++;
+       return;
+    }
+    tdata->injectionSpots.erase(tdata->injectionSpots.begin());
+       tdata->InstCount++;
+    //if(globalInstCountinject!=v){
+    //  globalInstCountinject++;
+   //   return;
+//return;
+//PIN_ReleaseLock(&globalLock);
+//    return;/////////////////////
+    if(REG_valid(reg)){
+    reg = REG_FullRegName(reg);
+    ADDRINT regValue = PIN_GetContextReg(ctxt, reg); // Get the current value of the register
+    PIN_GetLock(&globalLock, tid+1);
+    UINT32 injectBit = /*generateRandomNumber(seed)*/generateRandomNumberNonDeterministic() % (sizeof(UINT32) * 8); // MOST SDCs FOUND ON LEAST>    
+    PIN_ReleaseLock(&globalLock);
+    ADDRINT mask = 1UL << injectBit; // Create a mask for the bit flip
+    ADDRINT injectedValue = regValue ^ mask; // Apply the bit flip
+    PIN_SetContextReg(ctxt, reg, injectedValue); // Update the register with the new value
+
+    // Log the details of the injection// LOGOUT
+/*
+    PIN_GetLock(&globalLock, tid+1);
+    injection_commands << "Injection at instruction: 0x" << std::hex << ip
+           << ", Register: " << REG_StringShort(reg)
+           << ", Original Value: 0x" << std::hex << regValue
+           << ", Mask: 0x" << std::hex << mask
+           << ", Injected Value: 0x" << std::hex << injectedValue<<", Query: "<< tdata->queryId
+           << std::endl;
+    PIN_ReleaseLock(&globalLock);
+*/
+
+PIN_LockClient();
+RTN rtn = RTN_FindByAddress(ip);
+//INS ins = INS_FindByAddress(ip);
+//std::string disasem = INS_Valid(ins) ? INS_Disassemble(ins) : "UNKNOWN_INSTRUCTION";
+PIN_UnlockClient();
+
+
+
+   PIN_GetLock(&globalLock, tid+1);
+
+
+
+//       injection_commands << "Injection at instruction: 0x" << std::hex << ip
+//           << ", Register: " << REG_StringShort(reg) << ", Vector: " << j
+ //          << ", Original Value: 0x" << std::hex << xmmValue
+  //         << ", Mask: 0x" << std::hex << mask
+  //         << ", Injected Value: 0x" << std::hex <<injectedValue
+  //         << " Query ID :" << std::dec <<queryId<< std::endl;
+    std::ostringstream injections;
+    injections << "injection_results.txt";
+
+    // Serialize the knn_answer stored in reply to file
+    std::ofstream ofs(injections.str(), std::ios::app);
+    if (ofs.is_open()) {
+        // Assuming reply contains a DebugString method for human-readable output
+        ofs <<"Injection at instruction: 0x" << std::hex << ip
+           <<", Register: " << REG_StringShort(reg)
+           << ", Original Value: 0x" << std::hex << regValue
+           << ", Mask: 0x" << std::hex << mask
+           << ", Injected Value: 0x" << std::hex <<injectedValue
+           <<" func=" << (RTN_Valid(rtn) ? RTN_Name(rtn) : "??") <<" Query ID :" << std::dec <<tdata->queryId<< std::endl;
+        ofs.close();
+    } else {
+        fprintf(stderr, "Failed to open file %s for writing knn_answer\n", injections.str().c_str());
+    }
+   PIN_ReleaseLock(&globalLock);
+    PIN_ExecuteAt(ctxt);
+ }
+}
+
+
+
+
 ///////////////////////////
 /////////////////////////////////////////////////////////////////////////
-
+/////////////////////////////////////////////////////////////////////////
+    VOID CountInstructionWithLock(THREADID tid) {
+        ThreadData* tdata = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, tid));
+        if (tdata->trace == false || tdata->queryId == 12345 || tdata->inject == true)return;
+    //    if(queryId == 12345) return;
+    //    if (inject == true)return;
+        PIN_GetLock(&pinLock, tid+1);        // παίρνουμε το lock (ίδιος με thread id)
+        tdata->InstCount++;
+        *sharedValue=tdata->InstCount;
+        PIN_ReleaseLock(&pinLock);           // απελευθερώνουμε
+    }
 
 // Instruments write registers of each instruction for fault injection
 VOID InstructionInstrumentation(INS ins, VOID *v) {
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
-  INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)ThreadLock, IARG_THREAD_ID, IARG_END);
+ INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)ThreadLock, IARG_THREAD_ID, IARG_END);
 
-  INS_InsertCall( ins, IPOINT_BEFORE, (AFUNPTR)GetOpCode, IARG_INST_PTR, IARG_UINT32, INS_Size(ins) ,IARG_THREAD_ID, IARG_END);
+ INS_InsertCall( ins, IPOINT_BEFORE, (AFUNPTR)GetOpCode, IARG_INST_PTR, IARG_UINT32, INS_Size(ins) , IARG_PTR, strdup(INS_Disassemble(ins).c_str()),IARG_THREAD_ID, IARG_END);
 
-  INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)ThreadReleaseLock, IARG_END);
+ INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)ThreadReleaseLock, IARG_END);
 ///////////////////////////////////////////////////////////////////////////////////////////////////
     if (!isValidInst(ins))
         return;
-    if (INS_Mnemonic(ins) == "XOR") {
-        return;
-    }
+ //   if (INS_Mnemonic(ins) == "XOR") {
+  //      return;
+   // }
 //injection_commands <<"inside10"<<std::endl;
 //////////////////////////////////////////////////////////
 
@@ -678,9 +1037,32 @@ VOID InstructionInstrumentation(INS ins, VOID *v) {
             LOG("!!!!!!!!!REGNOTVALID: inst " + INS_Disassemble(ins) + "!!!!!!!!!!!!!\n");
             return;
       }
+    if (REG_is_xmm(reg)||REG_is_ymm(reg)) {return;}
+    INS_InsertCall(
+        ins, IPOINT_BEFORE,
+        AFUNPTR(CountInstructionWithLock),
+        IARG_THREAD_ID,
+        IARG_END
+    );
+
+
+
+    INS_InsertCall(
+        ins, IPOINT_AFTER, (AFUNPTR)InjectBitFlip,
+        IARG_INST_PTR, // Pass the instruction pointer
+       // IARG_PTR, strdup(INS_Disassemble(ins).c_str()),   // disassembly string ως pointer
+        IARG_UINT32, randW, // Pass the register index
+        IARG_UINT32, reg, // Pass the register identifier
+        IARG_CONTEXT, // Pass the full execution context
+        IARG_THREAD_ID,
+        IARG_END
+    );
+}
+
 ////
 //injection_commands <<"inside12"<<std::endl;
-    UINT32 isvector;
+/*
+  //  UINT32 isvector;
     // Insert a call to inject a fault into the selected write register
     if (REG_is_xmm(reg)) {
 //injection_commands <<"inside50"<<std::endl;////////
@@ -740,8 +1122,16 @@ VOID InstructionInstrumentation(INS ins, VOID *v) {
            IARG_END
            );
        }
-    }
-}
+       if(isDoublePrecision(ins) || isSinglePrecision(ins) || isVectorDoublePrecision(ins) || isVectorSinglePrecision(ins)){
+           INS_InsertCall(
+              ins, IPOINT_BEFORE,
+              AFUNPTR(CountInstructionWithLock),
+              IARG_THREAD_ID,
+             IARG_END
+           );
+       }
+    }*/
+
 
 
 
@@ -776,7 +1166,7 @@ int main(int argc, char *argv[]) {
     PIN_InitLock(&pinLock);
     // Δημιουργία TLS key
     tls_key = PIN_CreateThreadDataKey(NULL);
-
+    numInject = KnobNumInjections.Value();
     // Εγγραφή callbacks για το ξεκίνημα και το τέλος νημάτων
     PIN_AddThreadStartFunction(ThreadStart, NULL);
     PIN_AddThreadFiniFunction(ThreadFini, NULL);
@@ -784,7 +1174,7 @@ int main(int argc, char *argv[]) {
 PIN_AddForkFunction(FPOINT_BEFORE,            BeforeFork,        NULL);
 PIN_AddForkFunction(FPOINT_AFTER_IN_PARENT,   AfterForkInParent, NULL);
 PIN_AddForkFunction(FPOINT_AFTER_IN_CHILD,    AfterForkInChild,  NULL);
-
+//    TRACE_AddInstrumentFunction(Trace, nullptr);
     // Εγγραφή instrumentation για routines (για την ανίχνευση των ορίων του w>
     RTN_AddInstrumentFunction(RoutineInstrumentation, NULL);
 
