@@ -173,7 +173,7 @@ void ProcessRequest(NearestNeighborRequest& request,
     std::ofstream ofs(fname.str(), std::ios::app);
     if (ofs.is_open()) {
         // Assuming reply contains a DebugString method for human-readable output
-        ofs << knn_answer.get_knn_value() << (pid == 0 ? " CHILD" : " PARENT") << '\n';
+        ofs <<"QUERY: "<<intValue<<" -> RESPONSE: " <<knn_answer.get_knn_value() << (pid == 0 ? " CHILD" : " PARENT") << '\n';
         ofs.close();
     }
     else {
